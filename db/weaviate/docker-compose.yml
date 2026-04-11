@@ -1,0 +1,13 @@
+services:
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:1.36.9
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+    environment:
+      ENABLE_MODULES: text2vec-model2vec
+      MODEL2VEC_INFERENCE_API: http://text2vec-model2vec:8080
+
+  # A lightweight embedding model that will generate vectors from objects during import
+  text2vec-model2vec:
+    image: cr.weaviate.io/semitechnologies/model2vec-inference:minishlab-potion-base-32M

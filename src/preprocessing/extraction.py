@@ -203,6 +203,8 @@ def convert_and_save_with_page_numbers(input_file_path, output_file_path):
         
     doc = result.document
 
+    # TODO: HW - Instead of export_to_markdown, further process the richer document
+
     # Define a unique placeholder that won't appear in the text.
     # Using "\n" ensures it's on its own line.
     UNIQUE_PLACEHOLDER = "\n%%%__DOCLING_PAGE_BREAK__%%%\n"
@@ -228,6 +230,8 @@ def convert_and_save_with_page_numbers(input_file_path, output_file_path):
     markdown_pages = full_markdown.split(UNIQUE_PLACEHOLDER)
     
     final_output_chunks = []
+
+    # TODO: HW - markdown_pages can be further processed for richer structural info
     
     # Iterate through the pages, adding our custom footer.
     # We use enumerate to get a 1-based page number.
