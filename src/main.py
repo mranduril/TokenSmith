@@ -290,7 +290,7 @@ def run_chat_session(args: argparse.Namespace, cfg: RAGConfig):
         retrievers = [FAISSRetriever(faiss_idx, cfg.embed_model), BM25Retriever(bm25_idx)]
         if cfg.ranker_weights.get("index_keywords", 0) > 0:
             retrievers.append(IndexKeywordRetriever(cfg.extracted_index_path, cfg.page_to_chunk_map_path))
-        
+        print("Initialized retrievers: ", [r.name for r in retrievers])
         ranker = EnsembleRanker(ensemble_method=cfg.ensemble_method, weights=cfg.ranker_weights, rrf_k=int(cfg.rrf_k))
         print("Loaded retrievers and initialized ranker.")
         artifacts = {"chunks": chunks, "sources": sources, "retrievers": retrievers, "ranker": ranker, "meta": meta}

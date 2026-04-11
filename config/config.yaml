@@ -5,6 +5,7 @@ ensemble_method: "rrf"
 ranker_weights: {"faiss":1,"bm25":0,"index_keywords":0}
 rrf_k: 60
 max_gen_tokens: 400
+# model_path: "models/qwen2.5-1.5b-instruct-q5_k_m.gguf"
 chunk_mode : "recursive_sections"
 gen_model: "models/qwen2.5-3b-instruct-q8_0.gguf"
 chunk_size: 2000
