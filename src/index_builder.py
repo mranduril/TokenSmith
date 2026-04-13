@@ -181,7 +181,7 @@ def build_index(
         final_map[page] = sorted(list(id_set))
 
     exp_flag = 'exp_' if experimental_chunking else ''
-    output_file = artifacts_dir / f"{index_prefix}_{exp_flag}page_to_chunk_map.json"
+    output_file = artifacts_dir / f"{exp_flag}{index_prefix}_page_to_chunk_map.json"
     with open(output_file, "w") as f:
         json.dump(final_map, f, indent=2)
     print(f"Saved page to chunk ID map: {output_file}")
@@ -220,25 +220,25 @@ def build_index(
     dim = embeddings.shape[1]
     index = faiss.IndexFlatL2(dim)
     index.add(embeddings)
-    faiss.write_index(index, str(artifacts_dir / f"{index_prefix}_{exp_flag}faiss"))
-    print(f"FAISS Index built successfully: {index_prefix}_{exp_flag}faiss")
+    faiss.write_index(index, str(artifacts_dir / f"{exp_flag}{index_prefix}.faiss"))
+    print(f"FAISS Index built successfully: {exp_flag}{index_prefix}.faiss")
 
     # Step 4: Build BM25 index
     print(f"Building BM25 index for {len(all_chunks):,} chunks...")
     tokenized_chunks = [preprocess_for_bm25(chunk) for chunk in all_chunks]
     bm25_index = BM25Okapi(tokenized_chunks)
-    with open(artifacts_dir / f"{index_prefix}_{exp_flag}bm25.pkl", "wb") as f:
+    with open(artifacts_dir / f"{exp_flag}{index_prefix}_bm25.pkl", "wb") as f:
         pickle.dump(bm25_index, f)
-    print(f"BM25 Index built successfully: {index_prefix}_{exp_flag}bm25.pkl")
+    print(f"BM25 Index built successfully: {exp_flag}{index_prefix}_bm25.pkl")
 
     # Step 5: Dump index artifacts
-    with open(artifacts_dir / f"{index_prefix}_{exp_flag}chunks.pkl", "wb") as f:
+    with open(artifacts_dir / f"{exp_flag}{index_prefix}_chunks.pkl", "wb") as f:
         pickle.dump(all_chunks, f)
-    with open(artifacts_dir / f"{index_prefix}_{exp_flag}sources.pkl", "wb") as f:
+    with open(artifacts_dir / f"{exp_flag}{index_prefix}_sources.pkl", "wb") as f:
         pickle.dump(sources, f)
-    with open(artifacts_dir / f"{index_prefix}_{exp_flag}meta.pkl", "wb") as f:
+    with open(artifacts_dir / f"{exp_flag}{index_prefix}_meta.pkl", "wb") as f:
         pickle.dump(metadata, f)
-    print(f"Saved all index artifacts with prefix: {index_prefix}_{exp_flag}")
+    print(f"Saved all index artifacts with prefix: {exp_flag}{index_prefix}")
 
 # ------------------------ Helper functions ------------------------------
 
