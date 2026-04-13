@@ -7,6 +7,10 @@ from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption, InputFormat
 from docling.backend.docling_parse_v2_backend import DoclingParseV2DocumentBackend
 
+# global modifiers to parser
+USE_OCR = False
+USE_TABLE_STRUCTURE = False
+
 def extract_sections_from_markdown(
     file_path: str,
     exclusion_keywords: List[str] = None
@@ -185,8 +189,8 @@ def convert_and_save_with_page_numbers(input_file_path, output_file_path):
 
     # Disable OCR and table structure extraction for faster processing
     pipeline_options = PdfPipelineOptions()
-    pipeline_options.do_ocr = False
-    pipeline_options.do_table_structure = False
+    pipeline_options.do_ocr = USE_OCR
+    pipeline_options.do_table_structure = USE_TABLE_STRUCTURE
 
     converter = DocumentConverter(
     format_options={
@@ -230,8 +234,6 @@ def convert_and_save_with_page_numbers(input_file_path, output_file_path):
     markdown_pages = full_markdown.split(UNIQUE_PLACEHOLDER)
     
     final_output_chunks = []
-
-    # TODO: HW - markdown_pages can be further processed for richer structural info
     
     # Iterate through the pages, adding our custom footer.
     # We use enumerate to get a 1-based page number.
@@ -278,7 +280,7 @@ def preprocess_extracted_section(text: str) -> str:
     return cleaned_text
 
 
-def main():
+def main(args):
     # Returns all pdf files under data/chapters/
     project_root = Path(__file__).resolve().parent.parent.parent
     chapters_dir = project_root / "data/chapters"
@@ -288,12 +290,40 @@ def main():
     if len(pdfs) == 0:
         print("ERROR: No PDFs found in data/chapters/. Please copy a PDF there first.", file=sys.stderr)
         sys.exit(1)
+    
+    output_prefix = ""
+    if len(args) > 0:
+        # Examine extract options
+        if 'OCR' in args:
+            global USE_OCR
+            USE_OCR = True
+            print("OCR enabled for PDF conversion.")
+            output_prefix += "OCR_"
+        if 'TABLES' in args:
+            global USE_TABLE_STRUCTURE
+            USE_TABLE_STRUCTURE = True
+            print("Table structure extraction enabled for PDF conversion.")
+            output_prefix += "TABLES_"
+
+    if 'exp' in args:
+        from .docling_extraction_chunk import exp_extract
+        print("Running in experimental mode with additional CLI args: ", args[2:])
+        exp_extract(
+            args,
+            project_root,
+            pdfs,
+            output_prefix,
+            use_ocr=USE_OCR,
+            use_table_structure=USE_TABLE_STRUCTURE,
+        )
+        # HW: For the experiment routine, just return here without any markdown-json path
+        return
 
     # Convert each PDF to Markdown
     markdown_files = []
     for pdf_path in pdfs:
         pdf_name = pdf_path.stem
-        output_md = Path("data") / f"{pdf_name}--extracted_markdown.md"
+        output_md = Path("data") / f"{output_prefix}{pdf_name}--extracted_markdown.md"
 
         print(f"Converting '{pdf_path}' to '{output_md}'...")
         convert_and_save_with_page_numbers(str(pdf_path), str(output_md))
@@ -306,11 +336,12 @@ def main():
 
     if extracted_sections:
         print(f"Successfully extracted {len(extracted_sections)} sections.")
-        output_filename = project_root / "data/extracted_sections.json"
+        output_filename = project_root / f"data/{output_prefix}extracted_sections.json"
         with open(output_filename, 'w', encoding='utf-8') as f:
             json.dump(extracted_sections, f, indent=4, ensure_ascii=False)
         print(f"\nFull extracted content saved to '{output_filename}'")
 
 
 if __name__ == '__main__':
-    main()
+    parse_options = sys.argv[1:]  # Placeholder for future command-line options
+    main(parse_options)

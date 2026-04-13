@@ -73,3 +73,12 @@ run-chat:
 	@echo "Note: Chat mode requires interactive terminal. If this fails, use:"
 	@echo "  conda activate tokensmith && python -m src.main chat $(ARGS)"
 	conda run --no-capture-output -n tokensmith --no-capture-output python -m src.main chat $(ARGS)
+
+# Parser experient
+run-extract-exp:
+	@echo "Running PDF extraction experiment with additional CLI args: $(ARGS)"
+	conda run --no-capture-output -n tokensmith python -m src.preprocessing.extraction exp $(ARGS)
+
+run-index-exp:
+	@echo "Running TokenSmith index experiment with additional CLI args: $(ARGS)"
+	conda run --no-capture-output -n tokensmith python -m src.main index $(ARGS) --experimental_chunking

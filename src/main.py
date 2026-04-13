@@ -42,6 +42,7 @@ def parse_args() -> argparse.Namespace:
     indexing_group.add_argument("--keep_tables", action="store_true")
     indexing_group.add_argument("--multiproc_indexing", action="store_true")
     indexing_group.add_argument("--embed_with_headings", action="store_true")
+    indexing_group.add_argument("--experimental_chunking", action="store_true", help="Use the new Docling-based chunking strategy (experimental)")
     parser.add_argument(
         "--double_prompt",
         action="store_true",
@@ -74,6 +75,8 @@ def run_index_mode(args: argparse.Namespace, cfg: RAGConfig):
         index_prefix=args.index_prefix,
         use_multiprocessing=args.multiproc_indexing,
         use_headings=args.embed_with_headings,
+        experimental_chunking=args.experimental_chunking,
+        docling_json=sorted(pathlib.Path("data/exp").glob("*--hierarchical.json")) if args.experimental_chunking else None
     )
 
 def use_indexed_chunks(question: str, chunks: list) -> list:
