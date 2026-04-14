@@ -30,7 +30,7 @@ from src.ranking.ranker import EnsembleRanker
 from src.retriever import filter_retrieved_chunks, BM25Retriever, FAISSRetriever, IndexKeywordRetriever, get_page_numbers, load_artifacts
 
 # Constants
-INDEX_PREFIX = "textbook_index"
+INDEX_PREFIX = "exp_textbook_index"
 
 
 # Global state populated during app lifespan
@@ -261,6 +261,7 @@ async def test_chat(request: ChatRequest):
         topk_idxs, ordered_ranked_scores = _retrieve_and_rank(
             request.query, top_k=max_chunks
         )
+
 
         # Ensure safe types
         topk_idxs = [int(i) for i in (topk_idxs or [])]

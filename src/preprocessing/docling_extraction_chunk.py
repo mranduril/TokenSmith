@@ -1,11 +1,12 @@
 from pathlib import Path
 import uuid
 import json
+import re
 from typing import List, Dict
 import sys
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption, InputFormat
-from docling.backend.docling_parse_v2_backend import DoclingParseV2DocumentBackend
+from docling.backend.docling_parse_backend import DoclingParseDocumentBackend
 
 # LlmaIndex and Docling dependencies
 from docling_core.types.doc import DoclingDocument
@@ -54,7 +55,7 @@ def exp_extract(args, project_root, pdfs, output_prefix, *, use_ocr: bool = Fals
 def generate_docling_ir(input_file_path, output_file_path, *, use_ocr: bool = False, use_table_structure: bool = False):
     """
     Instead of flattening to Markdown after Docling conversion directly, preserve the IR
-
+DoclingParseDocumentBackend
     Sample further directions:
     - Convert to markdown/json with more metadata. Currently json only knows heading, chapter, and 1st sub-chapter
     - Skip json and directly chunk using the richer IR.
@@ -75,7 +76,7 @@ def generate_docling_ir(input_file_path, output_file_path, *, use_ocr: bool = Fa
 
     converter = DocumentConverter(
     format_options={
-            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options, backend=DoclingParseV2DocumentBackend)
+            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options, backend=DoclingParseDocumentBackend)
         }
     )
     
@@ -131,7 +132,25 @@ def chunk_docling_hierarchical_json(input_file_path):
     page_to_chunk_ids: Dict[int, set[int]] = {}
 
     max_chars_per_chunk = 1800
+    min_chunk_chars = 120
     current_chunk = None
+    seen_main_content = False
+
+    front_matter_markers = (
+        "database system concepts",
+        "about the authors",
+        "published by mcgraw-hill",
+        "cover image",
+        "copyright",
+        "dedication",
+    )
+    back_matter_markers = (
+        "index",
+        "further reading",
+    )
+
+    def normalize_text(value: str) -> str:
+        return " ".join(value.lower().split())
 
     def extract_page_numbers(doc_items: List[Dict]) -> List[int]:
         pages = {
@@ -141,6 +160,39 @@ def chunk_docling_hierarchical_json(input_file_path):
             if prov.get("page_no") is not None
         }
         return sorted(pages)
+
+    def is_main_content_heading(headings: List[str]) -> bool:
+        if not headings:
+            return False
+        heading = headings[-1].strip()
+        return bool(
+            re.match(r"^chapter\s+\d+\b", heading, re.IGNORECASE)
+            or re.match(r"^\d+(\.\d+)+\b", heading)
+        )
+
+    def is_noise_node(headings: List[str], text: str, page_numbers: List[int]) -> bool:
+        normalized_heading = normalize_text(" > ".join(headings))
+        normalized_text = normalize_text(text)
+
+        if not seen_main_content and not is_main_content_heading(headings):
+            return True
+
+        if any(marker in normalized_heading for marker in front_matter_markers):
+            return True
+
+        if any(marker in normalized_heading for marker in back_matter_markers) and page_numbers and page_numbers[0] > 2000:
+            return True
+
+        # Skip obvious table-of-contents lines like "1.2 Purpose of Database Systems 5"
+        if re.fullmatch(r"(\d+(\.\d+)+\s+.+?\s+\d+\s*)+", text.strip()):
+            return True
+
+        # Skip tiny fragments that usually come from cover/copyright noise
+        word_count = len(text.split())
+        if len(text) < min_chunk_chars and word_count < 20 and not re.search(r"[.!?]", text):
+            return True
+
+        return False
 
     def flush_current_chunk() -> None:
         nonlocal current_chunk
@@ -192,6 +244,12 @@ def chunk_docling_hierarchical_json(input_file_path):
         headings = node_metadata.get("headings") or []
         doc_items = node_metadata.get("doc_items") or []
         page_numbers = extract_page_numbers(doc_items)
+        if is_main_content_heading(headings):
+            seen_main_content = True
+
+        if is_noise_node(headings, text, page_numbers):
+            continue
+
         source_name = node_metadata.get("origin", {}).get("filename", str(input_file_path))
         section = headings[-1] if headings else "Unknown"
         section_path = " > ".join(headings) if headings else section
@@ -205,7 +263,14 @@ def chunk_docling_hierarchical_json(input_file_path):
         should_merge = (
             current_chunk is not None
             and current_chunk["section_path"] == section_path
-            and current_chunk["page_numbers"] == page_numbers
+            and (
+                current_chunk["page_numbers"] == page_numbers
+                or (
+                    current_chunk["page_numbers"]
+                    and page_numbers
+                    and page_numbers[0] - current_chunk["page_numbers"][-1] <= 1
+                )
+            )
             and len(current_chunk["text"]) + 1 + len(text) <= max_chars_per_chunk
         )
 
@@ -223,10 +288,10 @@ def chunk_docling_hierarchical_json(input_file_path):
             continue
 
         current_chunk["text"] += "\n" + text
+        current_chunk["page_numbers"] = sorted(set(current_chunk["page_numbers"]).union(page_numbers))
         current_chunk["node_ids"].extend([node_id] if node_id else [])
         current_chunk["doc_item_labels"].update(doc_item_labels)
 
     flush_current_chunk()
 
     return all_chunks, sources, metadata, page_to_chunk_ids
-
