@@ -273,6 +273,24 @@ def chunk_docling_hierarchical_json(input_file_path):
         if len(text) < min_chunk_chars and word_count < 20 and not re.search(r"[.!?]", text):
             return True
 
+        # Skip textbook-index style entries that survive under Docling.
+        # These often appear at the very end of the book with dense page refs
+        # and list-like text instead of explanatory prose.
+        numeric_refs = re.findall(r"\b\d{1,4}(?:-\d{1,4})?\b", text)
+        looks_like_index_text = (
+            page_numbers
+            and page_numbers[0] > 2000
+            and (
+                text.count(",") >= 8
+                or text.count(";") >= 2
+                or len(numeric_refs) >= 12
+                or "see also" in normalized_text
+                or re.search(r"\bsee\s+[a-z]", normalized_text) is not None
+            )
+        )
+        if looks_like_index_text:
+            return True
+
         return False
 
     def flush_current_chunk() -> None:

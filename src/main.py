@@ -130,6 +130,7 @@ def get_answer(
     sources = artifacts["sources"]
     retrievers = artifacts["retrievers"]
     ranker = artifacts["ranker"]
+    additional_log_info = dict(additional_log_info or {})
     # Ensure these locals exist for all control flows to avoid UnboundLocalError
     ranked_chunks: List[str] = []
     topk_idxs: List[int] = []
@@ -168,6 +169,8 @@ def get_answer(
         # print(f"Corresponding scores: {scores[:cfg.top_k]}")
         topk_idxs = filter_retrieved_chunks(cfg, chunks, ordered)
         ranked_chunks = [chunks[i] for i in topk_idxs]
+        additional_log_info["retrieval_top_idxs"] = topk_idxs
+        additional_log_info["retrieval_chunks"] = ranked_chunks
         # print(f"Top-{cfg.top_k} chunk indices after filtering: {topk_idxs}")
         # print("Len Ranked chunks:", len(ranked_chunks))
         # print("Example ranked chunk content:", ranked_chunks[0] if ranked_chunks else "No chunks retrieved")
@@ -204,6 +207,7 @@ def get_answer(
 
         # Step 3: Final re-ranking
         ranked_chunks = rerank(question, ranked_chunks, mode=cfg.rerank_mode, top_n=cfg.rerank_top_k)
+        additional_log_info["final_chunks_used"] = ranked_chunks
         # print("Reranked Chunks", type(ranked_chunks), len(ranked_chunks), type(ranked_chunks[0]) if ranked_chunks else "No chunks")
         # print("Example reranked chunk content:", ranked_chunks[0] if ranked_chunks else "No chunks after reranking")
 
@@ -258,8 +262,8 @@ def get_answer(
                 "max_tokens": cfg.max_gen_tokens
             },
             top_idxs=topk_idxs,
-            chunks=chunks,
-            sources=sources,
+            chunks=[chunks[i] for i in topk_idxs],
+            sources=[sources[i] for i in topk_idxs],
             page_map=page_nums,
             full_response=ans,
             top_k=len(topk_idxs),
