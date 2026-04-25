@@ -18,13 +18,14 @@ class RAGConfig:
     chunk_overlap: int = 200
 
     # retrieval + ranking
+    retrival_backend: str = "faiss"
     top_k: int = 10
     num_candidates: int = 60
     embed_model: str = "models/Qwen3-Embedding-4B-Q5_K_M.gguf"
     ensemble_method: str = "rrf"
     rrf_k: int  = 60
     ranker_weights: Dict[str, float] = field(
-        default_factory=lambda: {"faiss": 1.0, "bm25": 0.0, "index_keywords": 0.0}
+        default_factory=lambda: {"faiss": 1.0, "bm25": 0.0, "index_keywords": 0.0, "pgvector": 0.0}
     )
     rerank_mode: str = ""
     rerank_top_k: int = 5

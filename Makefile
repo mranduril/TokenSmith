@@ -82,3 +82,13 @@ run-extract-exp:
 run-index-exp:
 	@echo "Running TokenSmith index experiment with additional CLI args: $(ARGS)"
 	conda run --no-capture-output -n tokensmith python -m src.main index $(ARGS) --experimental_chunking
+
+run-index-exp-only:
+	@echo "Running TokenSmith index experiment without baseline indexing with additional CLI args: $(ARGS)"
+	conda run --no-capture-output -n tokensmith python -m src.main index $(ARGS) --experimental_chunking --exp_chunking_only
+
+run-chat-exp:
+	@echo "Running TokenSmith chat mode with PGVector + BM25 indexing with additional CLI args: $(ARGS)"
+	@echo "Note: Chat mode requires interactive terminal. If this fails, use:"
+	@echo "  conda activate tokensmith && python -m src.main chat $(ARGS)"
+	conda run --no-capture-output -n tokensmith --no-capture-output python -m src.main chat $(ARGS) --experimental_chunking --exp_chunking_only

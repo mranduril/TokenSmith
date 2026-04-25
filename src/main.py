@@ -13,7 +13,7 @@ from rich.markdown import Markdown
 
 from src.config import RAGConfig
 from src.generator import answer, double_answer, dedupe_generated_text
-from src.index_builder import build_index
+from src.index_builder import build_index, build_docling_pgvec_index
 from src.instrumentation.logging import get_logger
 from src.ranking.ranker import EnsembleRanker
 from src.preprocessing.chunking import DocumentChunker
@@ -22,9 +22,11 @@ from src.retriever import (
     filter_retrieved_chunks, 
     BM25Retriever, 
     FAISSRetriever, 
-    IndexKeywordRetriever, 
+    IndexKeywordRetriever,
+    PGVecRetriever,
     get_page_numbers, 
-    load_artifacts
+    load_artifacts,
+    load_pgvector_artifacts
 )
 from src.ranking.reranker import rerank
 
@@ -43,6 +45,7 @@ def parse_args() -> argparse.Namespace:
     indexing_group.add_argument("--multiproc_indexing", action="store_true")
     indexing_group.add_argument("--embed_with_headings", action="store_true")
     indexing_group.add_argument("--experimental_chunking", action="store_true", help="Use the new Docling-based chunking strategy (experimental)")
+    indexing_group.add_argument("--exp_chunking_only", action="store_true", help="Only rerun experimental chunking")
     parser.add_argument(
         "--double_prompt",
         action="store_true",
@@ -66,15 +69,25 @@ def run_index_mode(args: argparse.Namespace, cfg: RAGConfig):
         print("ERROR: No markdown files found in data/.", file=sys.stderr)
         sys.exit(1)
 
-    build_index(
-        markdown_file=str(md_files[0]),
-        chunker=chunker,
-        chunk_config=cfg.chunk_config,
+    if (not args.exp_chunking_only):
+        build_index(
+            markdown_file=str(md_files[0]),
+            chunker=chunker,
+            chunk_config=cfg.chunk_config,
+            embedding_model_path=cfg.embed_model,
+            artifacts_dir=artifacts_dir,
+            index_prefix=args.index_prefix,
+            use_multiprocessing=args.multiproc_indexing,
+            use_headings=args.embed_with_headings,
+            experimental_chunking=args.experimental_chunking
+        )
+
+    # Run a second pass on Docling IR to generate any corresponding index
+    build_docling_pgvec_index(
         embedding_model_path=cfg.embed_model,
         artifacts_dir=artifacts_dir,
         index_prefix=args.index_prefix,
         use_multiprocessing=args.multiproc_indexing,
-        use_headings=args.embed_with_headings,
         experimental_chunking=args.experimental_chunking,
         docling_json=sorted(pathlib.Path("data/exp").glob("*--hierarchical.json")) if args.experimental_chunking else None
     )
@@ -288,12 +301,24 @@ def run_chat_session(args: argparse.Namespace, cfg: RAGConfig):
     print("Initializing TokenSmith Chat...")
     try:
         artifacts_dir = cfg.get_artifacts_directory()
-        faiss_idx, bm25_idx, chunks, sources, meta = load_artifacts(artifacts_dir, args.index_prefix)
+        retrievers = []
+        if args.experimental_chunking:
+            print("Using experimental chunking strategy. Loading Docling-based artifacts...")
+            bm25_idx, chunks, sources, meta = load_pgvector_artifacts(artifacts_dir, "exp_" + args.index_prefix)
+            retrievers.append(BM25Retriever(bm25_idx))
+            retrievers.append(PGVecRetriever(index_prefix="exp_" + args.index_prefix, embed_model=cfg.embed_model))
+        else:
+            print("Using standard chunking strategy. Loading artifacts...")
+            faiss_idx, bm25_idx, chunks, sources, meta = load_artifacts(artifacts_dir, args.index_prefix)
+            retrievers.append(FAISSRetriever(faiss_idx, cfg.embed_model))
+            retrievers.append(BM25Retriever(bm25_idx))
+
         print(f"Loaded {len(chunks)} chunks and {len(sources)} sources from artifacts.")
-        retrievers = [FAISSRetriever(faiss_idx, cfg.embed_model), BM25Retriever(bm25_idx)]
+        
         if cfg.ranker_weights.get("index_keywords", 0) > 0:
             retrievers.append(IndexKeywordRetriever(cfg.extracted_index_path, cfg.page_to_chunk_map_path))
         print("Initialized retrievers: ", [r.name for r in retrievers])
+
         ranker = EnsembleRanker(ensemble_method=cfg.ensemble_method, weights=cfg.ranker_weights, rrf_k=int(cfg.rrf_k))
         print("Loaded retrievers and initialized ranker.")
         artifacts = {"chunks": chunks, "sources": sources, "retrievers": retrievers, "ranker": ranker, "meta": meta}

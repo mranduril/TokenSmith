@@ -94,6 +94,19 @@ make run-extract
 ```
 This generates markdown file(s) under `TOKENSMITH/data/`
 
+### 5.1) Set up PostgreSQL and pgvector for index storage (experimental). Make sure Docker is installed
+```shell
+docker run --name tokensmith-pgvector \
+  -e POSTGRES_USER=tokensmith \
+  -e POSTGRES_PASSWORD=tokensmith \
+  -e POSTGRES_DB=tokensmith \
+  -p 5433:5432 \
+  -v tokensmith_pgdata:/var/lib/postgresql/data \
+  -d pgvector/pgvector:pg16
+
+export TOKENSMITH_PGVECTOR_DSN="postgresql://tokensmith:tokensmith@localhost:5433/tokensmith"
+```
+
 ### 6) Index documents
 
 ```shell

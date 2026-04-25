@@ -26,12 +26,31 @@ from src.index_builder import preprocess_for_bm25
 # -------------------------- Embedder cache ------------------------------
 
 _EMBED_CACHE: Dict[str, CachedEmbedder] = {}
+DEFAULT_PGVECTOR_TABLE = "docling_pg_chunks"
 
 def _get_embedder(model_name: str) -> CachedEmbedder:
     if model_name not in _EMBED_CACHE:
         # Use the cached embedding model to avoid reloading it on every call
         _EMBED_CACHE[model_name] = CachedEmbedder(model_name)
     return _EMBED_CACHE[model_name]
+
+
+def _get_pgvector_dsn() -> str:
+    dsn = (
+        os.environ.get("TOKENSMITH_PGVECTOR_DSN")
+        or os.environ.get("PGVECTOR_DSN")
+        or os.environ.get("DATABASE_URL")
+    )
+    if not dsn:
+        raise RuntimeError(
+            "Set TOKENSMITH_PGVECTOR_DSN, PGVECTOR_DSN, or DATABASE_URL to use PGVecRetriever."
+        )
+    return dsn
+
+
+def _embedding_to_vector_literal(embedding) -> str:
+    values = [float(value) for value in embedding]
+    return "[" + ",".join(f"{value:.9g}" for value in values) + "]"
 
 
 # -------------------------- Read artifacts -------------------------------
@@ -52,6 +71,21 @@ def load_artifacts(artifacts_dir: os.PathLike, index_prefix: str) -> Tuple[faiss
     metadata = pickle.load(open(artifacts_dir / f"{index_prefix}_meta.pkl", "rb"))
 
     return faiss_index, bm25_index, chunks, sources, metadata
+
+def load_pgvector_artifacts(artifacts_dir: os.PathLike, index_prefix: str) -> Tuple[List[str], List[str], Any]:
+    """
+    Loads:
+      - chunks:      {index_prefix}_chunks.pkl
+      - sources:     {index_prefix}_sources.pkl
+    """
+    print(f"Loading PGVector artifacts from {artifacts_dir} with prefix '{index_prefix}'...")
+    artifacts_dir = pathlib.Path(artifacts_dir)
+    bm25_index  = pickle.load(open(artifacts_dir / f"{index_prefix}_bm25.pkl", "rb"))
+    chunks      = pickle.load(open(artifacts_dir / f"{index_prefix}_chunks.pkl", "rb"))
+    sources     = pickle.load(open(artifacts_dir / f"{index_prefix}_sources.pkl", "rb"))
+    metadata = pickle.load(open(artifacts_dir / f"{index_prefix}_meta.pkl", "rb"))
+
+    return bm25_index, chunks, sources, metadata
 
 
 # -------------------------- Helper to get page nums for chunks -------------------------------
@@ -85,6 +119,58 @@ class Retriever(ABC):
     def get_scores(self, query: str, pool_size: int, chunks: List[str]):
         """Retrieves the top 'pool_size' chunks cores for a given query."""
         pass
+
+class PGVecRetriever(Retriever):
+    name = "pgvector"
+
+    def __init__(
+        self,
+        index_prefix: str,
+        embed_model: str,
+        dsn: Optional[str] = None,
+        table_name: Optional[str] = None,
+    ):
+        self.index_prefix = index_prefix
+        self.embedder = _get_embedder(embed_model)
+        self.dsn = dsn or _get_pgvector_dsn()
+        self.table_name = table_name or os.environ.get("TOKENSMITH_PGVECTOR_TABLE", DEFAULT_PGVECTOR_TABLE)
+
+    def get_scores(self, query: str, pool_size: int, chunks) -> Dict[int, float]:
+        """
+        Returns pgvector scores for top 'pool_size' keyed by global chunk index.
+        """
+        try:
+            import psycopg
+            from psycopg import sql
+        except ImportError as exc:
+            raise RuntimeError(
+                "PGVecRetriever requires psycopg. Install it with `pip install psycopg[binary]`."
+            ) from exc
+
+        q_vec = self.embedder.encode([query]).astype("float32")[0]
+        q_literal = _embedding_to_vector_literal(q_vec)
+        table = sql.Identifier(self.table_name)
+
+        query_sql = sql.SQL("""
+            SELECT chunk_id, embedding <-> %s::vector AS distance
+            FROM {table}
+            WHERE index_prefix = %s
+            ORDER BY embedding <-> %s::vector
+            LIMIT %s
+        """).format(table=table)
+
+        with psycopg.connect(self.dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(query_sql, (q_literal, self.index_prefix, q_literal, pool_size))
+                rows = cur.fetchall()
+
+        scores: Dict[int, float] = {}
+        for chunk_id, distance in rows:
+            chunk_id = int(chunk_id)
+            if chunks is not None and hasattr(chunks, "__len__") and not (0 <= chunk_id < len(chunks)):
+                continue
+            scores[chunk_id] = 1.0 / (1.0 + float(distance))
+        return scores
 
 
 class FAISSRetriever(Retriever):

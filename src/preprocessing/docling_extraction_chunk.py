@@ -2,8 +2,9 @@ from pathlib import Path
 import uuid
 import json
 import re
-from typing import List, Dict
+from typing import Dict, Iterator, List, Optional, Sequence
 import sys
+from dataclasses import dataclass
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption, InputFormat
 from docling.backend.docling_parse_backend import DoclingParseDocumentBackend
@@ -113,22 +114,76 @@ def generate_docling_hierarchical_json(src_name, input_file_path):
     chunks = run_transformations([llamaIndex_doc], [node_parser], show_progress=True)
     return chunks
 
+@dataclass
+class DoclingChunkRecord:
+    chunk_id: int
+    doc_id: str
+    source: str
+
+    text: str
+    embedding_text: str
+    llm_text: str
+
+    section: str
+    section_path: str
+    headings: list[str]
+
+    page_numbers: list[int]
+    node_ids: list[str]
+    doc_item_refs: list[str]
+    doc_item_labels: list[str]
+
+    nodes: list[dict]
+    doc_items: list[dict]
+    relationships: dict
+
+    char_len: int
+    word_len: int
+    token_count: Optional[int]
+
+    metadata: dict
+
+
+@dataclass
+class DoclingChunkingResult:
+    records: list[DoclingChunkRecord]
+    page_to_chunk_ids: dict[int, set[int]]
+
+    def as_legacy_tuple(self):
+        all_chunks = [record.llm_text for record in self.records]
+        sources = [record.source for record in self.records]
+        metadata = [record.metadata for record in self.records]
+        return all_chunks, sources, metadata, self.page_to_chunk_ids
+
+    def __iter__(self) -> Iterator:
+        """Support existing tuple-unpacking callers during the migration."""
+        return iter(self.as_legacy_tuple())
+
+
 def chunk_docling_hierarchical_json(input_file_path):
     """
-    Alternative chunking approach that directly chunks the Docling IR without converting to markdown first.
-    This is more experimental and may require custom chunking logic to fully leverage the IR's structure.
+    Build structured chunks from LlamaIndex Docling nodes.
+
+    The returned records are the canonical representation for Docling-backed
+    retrieval. Legacy text chunks, sources, and metadata can be derived from
+    the result for the current FAISS/BM25 pipeline.
 
     Args:
-        input_file_path List[str]: The path to the source file, a json produced by generate_docling_hierarchical_json().
+        input_file_path: Path, or single-item path list, produced by
+            generate_docling_hierarchical_json().
     """
-    # TODO: As TokenSmith current stage, we also look at only 1 input file
+    def first_input_path(value) -> Path:
+        if isinstance(value, (str, Path)):
+            return Path(value)
+        if isinstance(value, Sequence) and value:
+            return Path(value[0])
+        raise ValueError("input_file_path must be a path or a non-empty sequence of paths")
 
-    with open(input_file_path[0], "r", encoding="utf-8") as f:
+    source_path = first_input_path(input_file_path)
+    with open(source_path, "r", encoding="utf-8") as f:
         nodes = json.load(f)
 
-    all_chunks: List[str] = []
-    sources: List[str] = []
-    metadata: List[Dict] = []
+    records: List[DoclingChunkRecord] = []
     page_to_chunk_ids: Dict[int, set[int]] = {}
 
     max_chars_per_chunk = 1800
@@ -136,6 +191,7 @@ def chunk_docling_hierarchical_json(input_file_path):
     current_chunk = None
     seen_main_content = False
 
+    # FIXME: hardcoded to textbook
     front_matter_markers = (
         "database system concepts",
         "about the authors",
@@ -144,6 +200,8 @@ def chunk_docling_hierarchical_json(input_file_path):
         "copyright",
         "dedication",
     )
+
+    # FIXME: hardcoded to textbook
     back_matter_markers = (
         "index",
         "further reading",
@@ -160,6 +218,29 @@ def chunk_docling_hierarchical_json(input_file_path):
             if prov.get("page_no") is not None
         }
         return sorted(pages)
+
+    def extract_doc_item_refs(doc_items: List[Dict]) -> List[str]:
+        refs = {
+            item.get("self_ref")
+            for item in doc_items
+            if item.get("self_ref")
+        }
+        return sorted(refs)
+
+    def render_embedding_text(section_path: str, chunk_text: str) -> str:
+        if not section_path:
+            return chunk_text
+        return f"Section: {section_path}\nContent: {chunk_text}"
+
+    def render_llm_text(section_path: str, page_numbers: List[int], chunk_text: str) -> str:
+        parts = []
+        if section_path:
+            parts.append(f"Section: {section_path}")
+        if page_numbers:
+            page_list = ", ".join(str(page) for page in page_numbers)
+            parts.append(f"Pages: {page_list}")
+        parts.append(chunk_text)
+        return "\n".join(parts)
 
     def is_main_content_heading(headings: List[str]) -> bool:
         if not headings:
@@ -199,18 +280,20 @@ def chunk_docling_hierarchical_json(input_file_path):
         if current_chunk is None:
             return
 
-        chunk_id = len(all_chunks)
+        chunk_id = len(records)
         chunk_text = current_chunk["text"].strip()
         if not chunk_text:
             current_chunk = None
             return
 
         section_path = current_chunk["section_path"]
-        prefixed_text = (
-            f"Description: {section_path} Content: {chunk_text}"
-            if section_path
-            else chunk_text
-        )
+        page_numbers = current_chunk["page_numbers"]
+        embedding_text = render_embedding_text(section_path, chunk_text)
+        llm_text = render_llm_text(section_path, page_numbers, chunk_text)
+        doc_items = current_chunk["doc_items"]
+        doc_item_refs = extract_doc_item_refs(doc_items)
+        doc_item_labels = sorted(current_chunk["doc_item_labels"])
+        node_ids = current_chunk["node_ids"]
 
         chunk_meta = {
             "filename": current_chunk["source"],
@@ -219,18 +302,42 @@ def chunk_docling_hierarchical_json(input_file_path):
             "word_len": len(chunk_text.split()),
             "section": current_chunk["section"],
             "section_path": section_path,
+            "headings": current_chunk["headings"],
             "text_preview": chunk_text[:100],
-            "page_numbers": current_chunk["page_numbers"],
+            "page_numbers": page_numbers,
             "chunk_id": chunk_id,
-            "node_ids": current_chunk["node_ids"],
-            "doc_item_labels": sorted(current_chunk["doc_item_labels"]),
+            "doc_id": current_chunk["doc_id"],
+            "node_ids": node_ids,
+            "doc_item_refs": doc_item_refs,
+            "doc_item_labels": doc_item_labels,
         }
 
-        all_chunks.append(prefixed_text)
-        sources.append(current_chunk["source"])
-        metadata.append(chunk_meta)
+        records.append(
+            DoclingChunkRecord(
+                chunk_id=chunk_id,
+                doc_id=current_chunk["doc_id"],
+                source=current_chunk["source"],
+                text=chunk_text,
+                embedding_text=embedding_text,
+                llm_text=llm_text,
+                section=current_chunk["section"],
+                section_path=section_path,
+                headings=current_chunk["headings"],
+                page_numbers=page_numbers,
+                node_ids=node_ids,
+                doc_item_refs=doc_item_refs,
+                doc_item_labels=doc_item_labels,
+                nodes=current_chunk["nodes"],
+                doc_items=doc_items,
+                relationships=current_chunk["relationships"],
+                char_len=len(chunk_text),
+                word_len=len(chunk_text.split()),
+                token_count=None,
+                metadata=chunk_meta,
+            )
+        )
 
-        for page_no in current_chunk["page_numbers"]:
+        for page_no in page_numbers:
             page_to_chunk_ids.setdefault(page_no, set()).add(chunk_id)
 
         current_chunk = None
@@ -243,6 +350,7 @@ def chunk_docling_hierarchical_json(input_file_path):
         node_metadata = node.get("metadata") or {}
         headings = node_metadata.get("headings") or []
         doc_items = node_metadata.get("doc_items") or []
+        relationships = node.get("relationships") or {}
         page_numbers = extract_page_numbers(doc_items)
         if is_main_content_heading(headings):
             seen_main_content = True
@@ -250,7 +358,8 @@ def chunk_docling_hierarchical_json(input_file_path):
         if is_noise_node(headings, text, page_numbers):
             continue
 
-        source_name = node_metadata.get("origin", {}).get("filename", str(input_file_path))
+        source_name = node_metadata.get("origin", {}).get("filename", str(source_path))
+        doc_id = str(node_metadata.get("origin", {}).get("binary_hash") or source_name)
         section = headings[-1] if headings else "Unknown"
         section_path = " > ".join(headings) if headings else section
         doc_item_labels = {
@@ -276,14 +385,20 @@ def chunk_docling_hierarchical_json(input_file_path):
 
         if not should_merge:
             flush_current_chunk()
+            chunk_relationships = {node_id: relationships} if node_id else {}
             current_chunk = {
                 "text": text,
+                "doc_id": doc_id,
                 "section": section,
                 "section_path": section_path,
+                "headings": headings,
                 "page_numbers": page_numbers,
                 "source": source_name,
                 "node_ids": [node_id] if node_id else [],
                 "doc_item_labels": set(doc_item_labels),
+                "nodes": [node],
+                "doc_items": list(doc_items),
+                "relationships": chunk_relationships,
             }
             continue
 
@@ -291,7 +406,14 @@ def chunk_docling_hierarchical_json(input_file_path):
         current_chunk["page_numbers"] = sorted(set(current_chunk["page_numbers"]).union(page_numbers))
         current_chunk["node_ids"].extend([node_id] if node_id else [])
         current_chunk["doc_item_labels"].update(doc_item_labels)
+        current_chunk["nodes"].append(node)
+        current_chunk["doc_items"].extend(doc_items)
+        if node_id:
+            current_chunk["relationships"][node_id] = relationships
 
     flush_current_chunk()
 
-    return all_chunks, sources, metadata, page_to_chunk_ids
+    return DoclingChunkingResult(
+        records=records,
+        page_to_chunk_ids=page_to_chunk_ids,
+    )
