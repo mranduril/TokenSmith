@@ -207,8 +207,70 @@ def chunk_docling_hierarchical_json(input_file_path):
         "further reading",
     )
 
+    # FIXME: still somewhat textbook-specific, but these sections are
+    # consistently low-signal for QA retrieval in the current corpus.
+    generic_overview_markers = (
+        "preface",
+        "enterprise information",
+        "previous editions",
+        "the seventh edition",
+    )
+
     def normalize_text(value: str) -> str:
         return " ".join(value.lower().split())
+
+    def sentence_like_count(value: str) -> int:
+        return len(re.findall(r"[.!?](?:\s|$)", value))
+
+    def is_heading_stub(value: str) -> bool:
+        stripped = " ".join(value.split())
+        if len(stripped) > 180:
+            return False
+        if sentence_like_count(stripped) > 0:
+            return False
+        return bool(
+            re.fullmatch(r"(chapter\s+\d+.*|\d+(\.\d+)+.*)", stripped, re.IGNORECASE)
+        )
+
+    def is_figure_or_table_chunk(headings: List[str], text: str) -> bool:
+        heading = headings[-1].strip() if headings else ""
+        normalized_heading = normalize_text(heading)
+        return bool(
+            re.match(r"^(figure|table)\b", heading, re.IGNORECASE)
+            or normalized_heading.startswith("figure ")
+            or normalized_heading.startswith("table ")
+            or normalize_text(text).startswith("page ")
+        )
+
+    def is_generic_overview_chunk(headings: List[str], text: str) -> bool:
+        normalized_heading = normalize_text(" > ".join(headings))
+        normalized_text = normalize_text(text)
+        return any(marker in normalized_heading or marker in normalized_text[:250] for marker in generic_overview_markers)
+
+    def should_skip_chunk(headings: List[str], text: str, page_numbers: List[int]) -> bool:
+        stripped = text.strip()
+        word_count = len(stripped.split())
+
+        if is_heading_stub(stripped):
+            return True
+
+        if is_figure_or_table_chunk(headings, stripped):
+            return True
+
+        if is_generic_overview_chunk(headings, stripped) and page_numbers and page_numbers[0] < 100:
+            return True
+
+        # Drop chunks that are mostly list-like fragments or page artifacts
+        # rather than explanatory prose.
+        if word_count < 80 and sentence_like_count(stripped) <= 1:
+            return True
+
+        line_breaks = stripped.count("\n")
+        comma_count = stripped.count(",")
+        if line_breaks >= 5 and comma_count >= 8 and sentence_like_count(stripped) <= 1:
+            return True
+
+        return False
 
     def extract_page_numbers(doc_items: List[Dict]) -> List[int]:
         pages = {
@@ -291,6 +353,15 @@ def chunk_docling_hierarchical_json(input_file_path):
         if looks_like_index_text:
             return True
 
+        if is_heading_stub(text):
+            return True
+
+        if is_figure_or_table_chunk(headings, text):
+            return True
+
+        if is_generic_overview_chunk(headings, text) and page_numbers and page_numbers[0] < 100:
+            return True
+
         return False
 
     def flush_current_chunk() -> None:
@@ -301,6 +372,10 @@ def chunk_docling_hierarchical_json(input_file_path):
         chunk_id = len(records)
         chunk_text = current_chunk["text"].strip()
         if not chunk_text:
+            current_chunk = None
+            return
+
+        if should_skip_chunk(current_chunk["headings"], chunk_text, current_chunk["page_numbers"]):
             current_chunk = None
             return
 
