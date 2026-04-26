@@ -256,3 +256,4 @@ tests/results
 # HW: Testing scripts
 test.py
 src/enhanced_parsing.ipynb
+project-specs/
